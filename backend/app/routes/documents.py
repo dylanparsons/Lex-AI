@@ -1,8 +1,13 @@
 import random
 import uuid
-from datetime import datetime, timedelta
-from fastapi import APIRouter, Query
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import List
+
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from app.models.schemas import Document, DocumentBatch
+from app.services import upload_store
+from app.services.extract import ExtractionError, extract_text
 
 router = APIRouter()
 
@@ -82,7 +87,8 @@ MOCK_DOCUMENTS = [
 
 
 def build_document(source_pool: dict, item: dict, time_offset_minutes: int = 0) -> Document:
-    ts = (datetime.utcnow() - timedelta(minutes=time_offset_minutes)).isoformat()
+    # timezone-aware so the ISO string ends in +00:00 and browsers convert it to local time
+    ts = (datetime.now(timezone.utc) - timedelta(minutes=time_offset_minutes)).isoformat()
     return Document(
         id=str(uuid.uuid4())[:8],
         title=item["title"],
@@ -114,5 +120,52 @@ def list_sources():
             {"id": "newswire",           "label": "Newswire Feed",      "type": "news"},
             {"id": "case-law-db",        "label": "Case Law Database",  "type": "case-law"},
             {"id": "regulatory-library", "label": "Regulatory Library", "type": "regulation"},
+            {"id": "upload",             "label": "Uploaded",           "type": "document"},
         ]
     }
+
+
+# ---------------------------------------------------------------- uploads
+
+DOC_TYPES = {".pdf": "pdf", ".docx": "docx", ".txt": "text", ".md": "text"}
+
+
+@router.post("/upload", summary="Upload PDF, DOCX, TXT or MD files")
+def upload(files: List[UploadFile] = File(...)):
+    saved, errors = [], []
+    for f in files:
+        name = Path(f.filename or "untitled").name
+        try:
+            text, pages = extract_text(name, f.file.read())
+        except ExtractionError as e:
+            errors.append({"filename": name, "error": str(e)})
+            continue
+        doc = Document(
+            id=str(uuid.uuid4())[:8],
+            title=name,
+            source="upload",
+            doc_type=DOC_TYPES[Path(name).suffix.lower()],
+            body=text,
+            published_at=datetime.now(timezone.utc).isoformat(),
+            tags=[],
+            filename=name,
+            pages=pages,
+            char_count=len(text),
+        )
+        upload_store.save(doc)
+        saved.append(doc)
+    if not saved and errors:
+        raise HTTPException(status_code=422, detail=errors)
+    return {"documents": saved, "errors": errors}
+
+
+@router.get("/uploads", response_model=DocumentBatch, summary="List uploaded documents")
+def list_uploads():
+    return DocumentBatch(documents=upload_store.list_all(), feed="uploads")
+
+
+@router.delete("/uploads/{doc_id}", summary="Delete an uploaded document")
+def delete_upload(doc_id: str):
+    if not upload_store.delete(doc_id):
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"deleted": doc_id}

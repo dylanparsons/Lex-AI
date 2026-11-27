@@ -31,3 +31,5 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+backend/logs/
+backend/uploads/

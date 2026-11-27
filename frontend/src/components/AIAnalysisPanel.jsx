@@ -1,6 +1,6 @@
-import React, { useState } from "react";
-import { Brain, CloudUpload, AlertTriangle, CheckCircle, Loader, Scale } from "lucide-react";
-import { analyzeDocuments } from "../api/client";
+import React, { useState, useEffect } from "react";
+import { Brain, HardDrive, AlertTriangle, CheckCircle, Loader, Scale } from "lucide-react";
+import { analyzeDocuments, fetchModels } from "../api/client";
 
 const FLAG_TYPE_LABELS = {
   "regulatory-change": "Regulatory Change",
@@ -15,6 +15,12 @@ const SEVERITY_STYLES = {
   low:    "bg-blue-500/10 border-blue-500/40 text-blue-300",
 };
 
+const SCORE_STYLES = {
+  high:   "bg-red-500/10 text-red-300 border-red-500/30",
+  medium: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+  low:    "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+};
+
 const WORKFLOW_OPTIONS = [
   { value: "legal-risk-review", label: "Legal Risk Review" },
   { value: "regulatory-compliance", label: "Regulatory Compliance" },
@@ -22,20 +28,51 @@ const WORKFLOW_OPTIONS = [
   { value: "daily-briefing", label: "Daily News Briefing" },
 ];
 
-export default function AIAnalysisPanel({ documents, onFlagsUpdate }) {
+export default function AIAnalysisPanel({ documents, scopeLabel, onFlagsUpdate, onScoresUpdate, onComplete }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [workflow, setWorkflow] = useState("legal-risk-review");
+  const [llm, setLlm] = useState(null);       // { provider, default_model, models, reachable }
+  const [model, setModel] = useState("");
+  const [elapsed, setElapsed] = useState(0);
+  // Snapshot of the batch that was analyzed: the live feed refreshes and issues new ids,
+  // so flags must be matched against what the model actually saw.
+  const [analyzedDocs, setAnalyzedDocs] = useState({});
+
+  useEffect(() => {
+    fetchModels()
+      .then((info) => {
+        setLlm(info);
+        setModel(info.default_model);
+      })
+      .catch(() => setLlm({ provider: "unknown", models: [], reachable: false }));
+  }, []);
+
+  // Local inference is slow enough that a running timer is reassuring.
+  useEffect(() => {
+    if (!loading) return;
+    setElapsed(0);
+    const id = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [loading]);
+
+  const modelOptions = llm
+    ? Array.from(new Set([llm.default_model, ...(llm.models || [])].filter(Boolean)))
+    : [];
 
   const runAnalysis = async () => {
     if (!documents?.length) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await analyzeDocuments(documents, workflow);
+      const batch = documents;
+      const data = await analyzeDocuments(batch, workflow, model);
+      setAnalyzedDocs(Object.fromEntries(batch.map((d) => [d.id, d])));
       setResult(data);
       onFlagsUpdate?.(data.risk_flags);
+      onScoresUpdate?.(data.document_scores || []);
+      onComplete?.();
     } catch (e) {
       setError(e.response?.data?.detail || "Analysis failed. Is the backend running?");
     } finally {
@@ -50,9 +87,30 @@ export default function AIAnalysisPanel({ documents, onFlagsUpdate }) {
         <div className="flex items-center gap-2">
           <Brain size={18} className="text-violet-400" />
           <h2 className="text-sm font-semibold text-slate-200">AI Legal Analysis</h2>
-          <span className="text-xs text-slate-500 bg-slate-700 px-2 py-0.5 rounded-full">GPT-4o-mini</span>
+          {llm && (
+            <span
+              className={`text-xs px-2 py-0.5 rounded-full ${
+                llm.reachable ? "text-slate-400 bg-slate-700" : "text-red-300 bg-red-500/10"
+              }`}
+              title={llm.reachable ? "Model server reachable" : "Model server not reachable"}
+            >
+              {llm.provider}{llm.reachable ? "" : " offline"}
+            </span>
+          )}
         </div>
         <div className="flex gap-2 flex-wrap">
+          {modelOptions.length > 0 && (
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              aria-label="Model"
+              className="bg-slate-700 border border-border text-xs text-slate-200 rounded-lg px-2 py-1.5 max-w-[12rem]"
+            >
+              {modelOptions.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          )}
           <select
             value={workflow}
             onChange={(e) => setWorkflow(e.target.value)}
@@ -67,7 +125,7 @@ export default function AIAnalysisPanel({ documents, onFlagsUpdate }) {
             disabled={loading || !documents?.length}
             className="text-xs px-4 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors flex items-center gap-1.5"
           >
-            {loading ? <><Loader size={12} className="animate-spin" /> Analyzing...</> : <><Scale size={12} /> Analyze</>}
+            {loading ? <><Loader size={12} className="animate-spin" /> Analyzing… {elapsed}s</> : <><Scale size={12} /> Analyze {documents?.length || 0}</>}
           </button>
         </div>
       </div>
@@ -78,7 +136,8 @@ export default function AIAnalysisPanel({ documents, onFlagsUpdate }) {
 
       {!result && !loading && !error && (
         <div className="text-sm text-slate-500 text-center py-10">
-          Select a workflow and click <span className="text-slate-300">Analyze</span> to run AI analysis across the document feed
+          Click <span className="text-slate-300">Analyze</span> to run AI analysis on the {documents?.length || 0} documents
+          in <span className="text-slate-300">{scopeLabel || "All Sources"}</span>. Use the source filters below to change what gets analyzed.
         </div>
       )}
 
@@ -119,6 +178,13 @@ export default function AIAnalysisPanel({ documents, onFlagsUpdate }) {
                       </div>
                     </div>
                     <p className="opacity-80">{f.rationale}</p>
+                    {analyzedDocs[f.doc_id] && (
+                      <p className="mt-1.5 pt-1.5 border-t border-white/10 text-slate-400 truncate">
+                        <span className="opacity-70">Source: </span>
+                        <span className="text-slate-300">{analyzedDocs[f.doc_id].title}</span>
+                        <span className="font-mono opacity-60"> #{f.doc_id}</span>
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -126,6 +192,27 @@ export default function AIAnalysisPanel({ documents, onFlagsUpdate }) {
           ) : (
             <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-2">
               <CheckCircle size={14} /> No significant risks flagged in this batch
+            </div>
+          )}
+
+          {/* Per-document scores */}
+          {result.document_scores?.length > 0 && (
+            <div>
+              <p className="text-xs text-slate-400 mb-2 font-medium uppercase tracking-wider">Document Scores</p>
+              <div className="flex flex-col divide-y divide-border border border-border rounded-lg">
+                {[...result.document_scores]
+                  .sort((a, b) => b.risk_score - a.risk_score)
+                  .map((s) => (
+                    <div key={s.doc_id} className="px-3 py-2 text-xs grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 items-center">
+                      <span className="text-slate-200 font-medium truncate" title={s.title}>{s.title}</span>
+                      <div className="flex items-center gap-2 justify-end">
+                        <span className={`px-2 py-0.5 rounded-full border capitalize ${SCORE_STYLES[s.risk_level]}`}>{s.risk_level}</span>
+                        <span className="text-slate-300 tabular-nums w-14 text-right">{s.risk_score}/100</span>
+                      </div>
+                      <span className="text-slate-400 col-span-2">{s.summary}</span>
+                    </div>
+                  ))}
+              </div>
             </div>
           )}
 
@@ -139,8 +226,12 @@ export default function AIAnalysisPanel({ documents, onFlagsUpdate }) {
           <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
             <span>Confidence: <span className="text-slate-300 font-medium">{Math.round(result.confidence * 100)}%</span></span>
             <div className="flex items-center gap-1.5">
-              <CloudUpload size={12} className={result.logged_to_s3 ? "text-emerald-400" : "text-slate-600"} />
-              <span>{result.logged_to_s3 ? "Logged to S3" : "S3 logging skipped"}</span>
+              <span className="text-slate-400">{result.model_used}</span>
+              <span className="text-slate-600">·</span>
+              <HardDrive size={12} className={result.logged ? "text-emerald-400" : "text-slate-600"} />
+              <span title={result.log_destination}>
+                {result.logged ? (result.logged_to_s3 ? "Logged to S3" : "Logged locally") : "Not logged"}
+              </span>
             </div>
           </div>
         </div>

@@ -1,7 +1,8 @@
 import React, { useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 
 const SOURCE_STYLES = {
+  "upload":             { label: "Uploaded",           bg: "bg-violet-500/10", border: "border-violet-500/30", text: "text-violet-300" },
   "newswire":           { label: "Newswire Feed",      bg: "bg-orange-500/10", border: "border-orange-500/30", text: "text-orange-300" },
   "case-law-db":        { label: "Case Law Database",  bg: "bg-blue-500/10",   border: "border-blue-500/30",   text: "text-blue-300"   },
   "regulatory-library": { label: "Regulatory Library", bg: "bg-teal-500/10",   border: "border-teal-500/30",   text: "text-teal-300"   },
@@ -12,9 +13,20 @@ const TYPE_LABELS = {
   "case-law":    "Case Law",
   "regulation":  "Regulation",
   "legal-brief": "Legal Brief",
+  "pdf":         "PDF",
+  "docx":        "Word",
+  "text":        "Text",
 };
 
-export default function DocumentCard({ doc, flagged, flagSeverity }) {
+const SCORE_STYLES = {
+  high:   "bg-red-500/10 text-red-300 border-red-500/30",
+  medium: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+  low:    "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+};
+
+const EXCERPT_CHARS = 1500;
+
+export default function DocumentCard({ doc, flagged, flagSeverity, score, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const s = SOURCE_STYLES[doc.source] || SOURCE_STYLES["newswire"];
 
@@ -37,6 +49,14 @@ export default function DocumentCard({ doc, flagged, flagSeverity }) {
           {doc.jurisdiction && (
             <span className="text-xs text-slate-500">{doc.jurisdiction}</span>
           )}
+          {score && (
+            <span
+              className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${SCORE_STYLES[score.risk_level]}`}
+              title={score.summary}
+            >
+              Risk {score.risk_score}
+            </span>
+          )}
           {flagged && (
             <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
               flagSeverity === "high"
@@ -47,7 +67,25 @@ export default function DocumentCard({ doc, flagged, flagSeverity }) {
             </span>
           )}
         </div>
-        <h3 className="text-sm font-semibold text-slate-100 leading-snug">{doc.title}</h3>
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100 leading-snug break-all">{doc.title}</h3>
+          {onDelete && (
+            <button
+              onClick={() => onDelete(doc.id)}
+              aria-label={`Delete ${doc.title}`}
+              title="Delete"
+              className="text-slate-500 hover:text-red-400 transition-colors shrink-0"
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
+        </div>
+        {doc.source === "upload" && (
+          <p className="text-xs text-slate-500">
+            {doc.pages ? `${doc.pages} page${doc.pages === 1 ? "" : "s"} · ` : ""}
+            {(doc.char_count ?? doc.body.length).toLocaleString()} characters
+          </p>
+        )}
       </div>
 
       {doc.tags?.length > 0 && (
@@ -63,11 +101,13 @@ export default function DocumentCard({ doc, flagged, flagSeverity }) {
         className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300 transition-colors self-start"
       >
         {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        {expanded ? "Hide" : "Read excerpt"}
+        {expanded ? "Hide" : doc.source === "upload" ? "Preview text" : "Read excerpt"}
       </button>
 
       {expanded && (
-        <p className="text-xs text-slate-400 leading-relaxed border-t border-border pt-3">{doc.body}</p>
+        <p className="text-xs text-slate-400 leading-relaxed border-t border-border pt-3 whitespace-pre-line">
+          {doc.body.length > EXCERPT_CHARS ? `${doc.body.slice(0, EXCERPT_CHARS)}…` : doc.body}
+        </p>
       )}
 
       <div className="flex items-center justify-between text-xs text-slate-600">
