@@ -1,7 +1,14 @@
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
 pydantic==2.7.1
-openai==1.30.1
-boto3==1.34.114
 python-dotenv==1.0.1
 httpx==0.27.0
+
+# Text extraction for uploaded files
+pypdf==5.1.0
+python-docx==1.1.2
+
+# Optional: only needed for LLM_PROVIDER=openai (OpenAI or LM Studio / llama.cpp / vLLM)
+openai==1.30.1
+# Optional: only needed for LOG_BACKEND=s3
+boto3==1.34.114
